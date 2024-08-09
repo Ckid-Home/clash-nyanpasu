@@ -6,11 +6,13 @@
 //!
 use crate::{
     config::*,
-    core::*,
+    core::{service::ipc::get_ipc_state, *},
     log_err,
     utils::{self, help::get_clash_external_port, resolve},
 };
 use anyhow::{bail, Result};
+use handle::Message;
+use nyanpasu_ipc::api::status::CoreState;
 use serde_yaml::{Mapping, Value};
 use wry::application::clipboard::Clipboard;
 
@@ -52,10 +54,10 @@ pub fn restart_clash_core() {
         match CoreManager::global().run_core().await {
             Ok(_) => {
                 handle::Handle::refresh_clash();
-                handle::Handle::notice_message("set_config::ok", "ok");
+                handle::Handle::notice_message(&Message::SetConfig(Ok(())));
             }
             Err(err) => {
-                handle::Handle::notice_message("set_config::error", format!("{err}"));
+                handle::Handle::notice_message(&Message::SetConfig(Err(format!("{err}"))));
                 log::error!(target:"app", "{err}");
             }
         }
@@ -221,7 +223,13 @@ pub async fn patch_clash(patch: Mapping) -> Result<()> {
                 let strategy = Config::verge()
                     .latest()
                     .get_external_controller_port_strategy();
-                get_clash_external_port(&strategy, port)?; // Do a check
+                let core_state = crate::core::CoreManager::global().status().await;
+                if matches!(core_state.0.as_ref(), &CoreState::Running)
+                    && get_clash_external_port(&strategy, port).is_err()
+                {
+                    Config::clash().discard();
+                    bail!("can not select fixed: current port is not available.");
+                }
             }
         }
 
@@ -275,21 +283,15 @@ pub async fn patch_verge(patch: IVerge) -> Result<()> {
     let enable_tray_selector = patch.clash_tray_selector;
 
     let res = || async move {
-        #[cfg(target_os = "windows")]
-        {
-            let service_mode = patch.enable_service_mode;
+        let service_mode = patch.enable_service_mode;
+        let ipc_state = get_ipc_state();
+        if service_mode.is_some() && ipc_state.is_connected() {
+            log::debug!(target: "app", "change service mode to {}", service_mode.unwrap());
 
-            if service_mode.is_some() {
-                log::debug!(target: "app", "change service mode to {}", service_mode.unwrap());
-
-                Config::generate().await?;
-                CoreManager::global().run_core().await?;
-            } else if tun_mode.is_some() {
-                update_core_config().await?;
-            }
+            Config::generate().await?;
+            CoreManager::global().run_core().await?;
         }
 
-        #[cfg(not(target_os = "windows"))]
         if tun_mode.is_some() {
             update_core_config().await?;
         }
@@ -387,11 +389,11 @@ async fn update_core_config() -> Result<()> {
     match CoreManager::global().update_config().await {
         Ok(_) => {
             handle::Handle::refresh_clash();
-            handle::Handle::notice_message("set_config::ok", "ok");
+            handle::Handle::notice_message(&Message::SetConfig(Ok(())));
             Ok(())
         }
         Err(err) => {
-            handle::Handle::notice_message("set_config::error", format!("{err}"));
+            handle::Handle::notice_message(&Message::SetConfig(Err(format!("{err}"))));
             Err(err)
         }
     }

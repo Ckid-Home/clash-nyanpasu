@@ -19,6 +19,7 @@ use nyanpasu_utils::{
 };
 use once_cell::sync::OnceCell;
 use parking_lot::Mutex;
+use serde::{Deserialize, Serialize};
 use std::{
     borrow::Cow,
     path::PathBuf,
@@ -30,7 +31,10 @@ use std::{
 };
 use tauri::api::process::Command;
 use tokio::time::sleep;
+use tracing_attributes::instrument;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum RunType {
     /// Run as child process directly
     Normal,
@@ -111,6 +115,13 @@ impl Instance {
             RunType::Elevated => {
                 todo!()
             }
+        }
+    }
+
+    pub fn run_type(&self) -> RunType {
+        match self {
+            Instance::Child { .. } => RunType::Normal,
+            Instance::Service { .. } => RunType::Service,
         }
     }
 
@@ -310,6 +321,47 @@ impl Instance {
             }
         }
     }
+
+    /// get core state with state changed timestamp
+    pub async fn status<'a>(&self) -> (Cow<'a, CoreState>, i64) {
+        match self {
+            Instance::Child {
+                child,
+                stated_changed_at,
+                ..
+            } => {
+                let this = child.lock();
+                (
+                    Cow::Borrowed(match this.state() {
+                        nyanpasu_utils::core::instance::CoreInstanceState::Running => {
+                            &CoreState::Running
+                        }
+                        nyanpasu_utils::core::instance::CoreInstanceState::Stopped => {
+                            &CoreState::Stopped(None)
+                        }
+                    }),
+                    stated_changed_at.load(Ordering::Relaxed),
+                )
+            }
+            Instance::Service { .. } => {
+                let status = nyanpasu_ipc::client::shortcuts::Client::service_default()
+                    .status()
+                    .await;
+                match status {
+                    Ok(info) => (
+                        Cow::Owned(match info.core_infos.state {
+                            nyanpasu_ipc::api::status::CoreState::Running => CoreState::Running,
+                            nyanpasu_ipc::api::status::CoreState::Stopped(_) => {
+                                CoreState::Stopped(None)
+                            }
+                        }),
+                        info.core_infos.state_changed_at,
+                    ),
+                    Err(_) => (Cow::Owned(CoreState::Stopped(None)), 0),
+                }
+            }
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -323,6 +375,23 @@ impl CoreManager {
         CORE_MANAGER.get_or_init(|| CoreManager {
             instance: Mutex::new(None),
         })
+    }
+
+    pub async fn status<'a>(&self) -> (Cow<'a, CoreState>, i64, RunType) {
+        let instance = {
+            let instance = self.instance.lock();
+            instance.as_ref().cloned()
+        };
+        if let Some(instance) = instance {
+            let (state, ts) = instance.status().await;
+            (state, ts, instance.run_type())
+        } else {
+            (
+                Cow::Owned(CoreState::Stopped(None)),
+                0_i64,
+                RunType::default(),
+            )
+        }
     }
 
     pub fn init(&self) -> Result<()> {
@@ -339,7 +408,7 @@ impl CoreManager {
         let config_path = Config::generate_file(ConfigType::Check)?;
         let config_path = dirs::path_to_str(&config_path)?;
 
-        let clash_core = { Config::verge().latest().clash_core.clone() };
+        let clash_core = { Config::verge().latest().clash_core };
         let clash_core = clash_core.unwrap_or(ClashCore::ClashPremium).to_string();
 
         let app_dir = dirs::app_data_dir()?;
@@ -378,7 +447,6 @@ impl CoreManager {
         }
 
         // 检查端口是否可用
-        // TODO: 修复下面这个方法，从而允许 Fallback 到其他端口
         Config::clash()
             .latest()
             .prepare_external_controller_port()?;
@@ -509,6 +577,7 @@ impl CoreManager {
     }
 
     /// 切换核心
+    #[instrument(skip(self))]
     pub async fn change_core(&self, clash_core: Option<ClashCore>) -> Result<()> {
         let clash_core = clash_core.ok_or(anyhow::anyhow!("clash core is null"))?;
 
@@ -526,12 +595,14 @@ impl CoreManager {
 
         match self.run_core().await {
             Ok(_) => {
+                tracing::info!("change core success");
                 Config::verge().apply();
                 Config::runtime().apply();
                 log_err!(Config::verge().latest().save_file());
                 Ok(())
             }
             Err(err) => {
+                tracing::error!("failed to change core: {err}");
                 Config::verge().discard();
                 Config::runtime().discard();
                 self.run_core().await?;

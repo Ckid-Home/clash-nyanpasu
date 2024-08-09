@@ -13,10 +13,14 @@ use crate::{
 };
 use anyhow::{Context, Result};
 use chrono::Local;
+use indexmap::IndexMap;
 use log::debug;
+use nyanpasu_ipc::api::status::CoreState;
+use profile::item_type::ProfileItemType;
 use serde_yaml::Mapping;
-use std::collections::{HashMap, VecDeque};
+use std::{borrow::Cow, collections::VecDeque, path::PathBuf};
 use sysproxy::Sysproxy;
+use tray::icon::TrayIcon;
 
 use tauri::api::dialog::FileDialogBuilder;
 
@@ -101,9 +105,36 @@ pub async fn patch_profiles_config(profiles: IProfiles) -> CmdResult {
 
 /// 修改某个profile item的
 #[tauri::command]
-pub fn patch_profile(index: String, profile: ProfileItem) -> CmdResult {
-    wrap_err!(Config::profiles().data().patch_item(index, profile))?;
+pub async fn patch_profile(index: String, profile: ProfileItem) -> CmdResult {
+    tracing::debug!("patch profile: {index} with {profile:?}");
+    wrap_err!(Config::profiles().data().patch_item(index.clone(), profile))?;
     ProfilesJobGuard::global().lock().refresh();
+    let need_update = {
+        let profiles = Config::profiles();
+        let profiles = profiles.latest();
+        match (&profiles.chain, &profiles.current) {
+            (Some(chains), _) if chains.contains(&index) => true,
+            (_, Some(current_chain)) if current_chain == &index => true,
+            (_, Some(current_chain)) => match profiles.get_item(current_chain) {
+                Ok(item) => item
+                    .chains
+                    .as_ref()
+                    .map_or(false, |chain| chain.contains(&index)),
+                Err(_) => false,
+            },
+            _ => false,
+        }
+    };
+    if need_update {
+        match CoreManager::global().update_config().await {
+            Ok(_) => {
+                handle::Handle::refresh_clash();
+            }
+            Err(err) => {
+                log::error!(target: "app", "{err}");
+            }
+        }
+    }
     Ok(())
 }
 
@@ -129,7 +160,14 @@ pub fn read_profile_file(index: String) -> CmdResult<String> {
     let profiles = Config::profiles();
     let profiles = profiles.latest();
     let item = wrap_err!(profiles.get_item(&index))?;
-    let data = wrap_err!(item.read_file())?;
+    let data = match item.r#type.as_ref().unwrap_or(&ProfileItemType::Local) {
+        ProfileItemType::Local | ProfileItemType::Remote => {
+            let raw = wrap_err!(item.read_file())?;
+            let data = wrap_err!(serde_yaml::from_str::<Mapping>(&raw))?;
+            wrap_err!(serde_yaml::to_string(&data).context("failed to convert yaml to string"))?
+        }
+        _ => wrap_err!(item.read_file())?,
+    };
     Ok(data)
 }
 
@@ -173,13 +211,28 @@ pub fn get_runtime_exists() -> CmdResult<Vec<String>> {
 }
 
 #[tauri::command]
-pub fn get_runtime_logs() -> CmdResult<HashMap<String, Logs>> {
+pub fn get_runtime_logs() -> CmdResult<IndexMap<String, Logs>> {
     Ok(Config::runtime().latest().chain_logs.clone())
 }
 
 #[tauri::command]
+pub async fn get_core_status<'n>() -> CmdResult<(Cow<'n, CoreState>, i64, RunType)> {
+    Ok(CoreManager::global().status().await)
+}
+
+#[tauri::command]
+pub async fn url_delay_test(url: &str, expected_status: u16) -> CmdResult<Option<u64>> {
+    Ok(crate::utils::net::url_delay_test(url, expected_status).await)
+}
+
+#[tauri::command]
+#[tracing_attributes::instrument]
 pub async fn patch_clash_config(payload: Mapping) -> CmdResult {
-    wrap_err!(feat::patch_clash(payload).await)?;
+    tracing::debug!("patch_clash_config: {payload:?}");
+    if let Err(e) = feat::patch_clash(payload).await {
+        tracing::error!("{e}");
+        return Err(format!("{e}"));
+    }
     feat::update_proxies_buff(None);
     Ok(())
 }
@@ -448,6 +501,11 @@ pub fn restart_application(app_handle: tauri::AppHandle) -> CmdResult {
     Ok(())
 }
 
+#[tauri::command]
+pub fn get_server_port() -> CmdResult<u16> {
+    Ok(*crate::server::SERVER_PORT)
+}
+
 #[cfg(not(windows))]
 #[tauri::command]
 pub async fn set_custom_app_dir(_path: String) -> CmdResult {
@@ -463,6 +521,23 @@ pub mod uwp {
     pub async fn invoke_uwp_tool() -> CmdResult {
         wrap_err!(win_uwp::invoke_uwptools().await)
     }
+}
+
+#[tauri::command]
+pub async fn set_tray_icon(
+    app_handle: tauri::AppHandle,
+    mode: TrayIcon,
+    path: Option<PathBuf>,
+) -> CmdResult {
+    wrap_err!(crate::core::tray::icon::set_icon(mode, path))?;
+    wrap_err!(crate::core::tray::Tray::update_part(&app_handle))?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn is_tray_icon_set(mode: TrayIcon) -> CmdResult<bool> {
+    let icon_path = wrap_err!(crate::utils::dirs::tray_icons_path(mode.as_str()))?;
+    Ok(tokio::fs::metadata(icon_path).await.is_ok())
 }
 
 pub mod service {
@@ -486,17 +561,56 @@ pub mod service {
 
     #[tauri::command]
     pub async fn start_service() -> CmdResult {
-        wrap_err!(service::control::start_service().await)
+        let res = wrap_err!(service::control::start_service().await);
+        let enabled_service = {
+            *crate::config::Config::verge()
+                .latest()
+                .enable_service_mode
+                .as_ref()
+                .unwrap_or(&false)
+        };
+        if enabled_service {
+            if let Err(e) = crate::core::CoreManager::global().run_core().await {
+                log::error!(target: "app", "{e}");
+            }
+        }
+        res
     }
 
     #[tauri::command]
     pub async fn stop_service() -> CmdResult {
-        wrap_err!(service::control::stop_service().await)
+        let res = wrap_err!(service::control::stop_service().await);
+        let enabled_service = {
+            *crate::config::Config::verge()
+                .latest()
+                .enable_service_mode
+                .as_ref()
+                .unwrap_or(&false)
+        };
+        if enabled_service {
+            if let Err(e) = crate::core::CoreManager::global().run_core().await {
+                log::error!(target: "app", "{e}");
+            }
+        }
+        res
     }
 
     #[tauri::command]
     pub async fn restart_service() -> CmdResult {
-        wrap_err!(service::control::restart_service().await)
+        let res = wrap_err!(service::control::restart_service().await);
+        let enabled_service = {
+            *crate::config::Config::verge()
+                .latest()
+                .enable_service_mode
+                .as_ref()
+                .unwrap_or(&false)
+        };
+        if enabled_service {
+            if let Err(e) = crate::core::CoreManager::global().run_core().await {
+                log::error!(target: "app", "{e}");
+            }
+        }
+        res
     }
 }
 

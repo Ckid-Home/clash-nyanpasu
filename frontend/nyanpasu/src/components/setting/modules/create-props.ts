@@ -1,3 +1,4 @@
+import { useGlobalMutation } from "@/utils/mutation";
 import { SwitchProps } from "@mui/material/Switch/Switch";
 import { Clash, useClash, useNyanpasu, VergeConfig } from "@nyanpasu/interface";
 import { MenuItemProps } from "@nyanpasu/ui";
@@ -22,17 +23,25 @@ export const clash = {
    * @author keiko233 <i@elaina.moe>
    * @copyright LibNyanpasu org. 2024
    */
-  createBooleanProps: (
+  useBooleanProps: (
     propName: {
       [K in keyof Clash.Config]: Clash.Config[K] extends boolean ? K : never;
     }[keyof Clash.Config],
   ): SwitchProps => {
-    const { getConfigs, setConfigs } = useClash();
-
+    const { getConfigs, setConfigs, setClashInfo } = useClash();
+    const mutate = useGlobalMutation();
     return {
       checked: getConfigs.data?.[propName] || false,
       onChange: () => {
-        setConfigs({ [propName]: !getConfigs.data?.[propName] });
+        Promise.all([
+          setClashInfo({ [propName]: !getConfigs.data?.[propName] }),
+          setConfigs({ [propName]: !getConfigs.data?.[propName] }),
+        ]).finally(() => {
+          mutate(
+            (key) =>
+              typeof key === "string" && key.includes("/getRuntimeConfigYaml"),
+          );
+        });
       },
     };
   },
@@ -52,17 +61,26 @@ export const clash = {
    * @author keiko233 <i@elaina.moe>
    * @copyright LibNyanpasu org. 2024
    */
-  createMenuProps: (
+  useMenuProps: (
     propName: keyof Clash.Config,
     { options, fallbackSelect }: CreateMenuPropsOptions,
   ): Omit<MenuItemProps, "label"> => {
-    const { getConfigs, setConfigs } = useClash();
+    const { getConfigs, setConfigs, setClashInfo } = useClash();
+    const mutate = useGlobalMutation();
 
     return {
       options,
       selected: getConfigs.data?.[propName] || fallbackSelect,
       onSelected: (value: OptionValue) => {
-        setConfigs({ [propName]: value });
+        Promise.all([
+          setClashInfo({ [propName]: !getConfigs.data?.[propName] }),
+          setConfigs({ [propName]: value }),
+        ]).finally(() => {
+          mutate(
+            (key) =>
+              typeof key === "string" && key.includes("/getRuntimeConfigYaml"),
+          );
+        });
       },
     };
   },
@@ -81,7 +99,7 @@ export const nyanpasu = {
    * @author keiko233 <i@elaina.moe>
    * @copyright LibNyanpasu org. 2024
    */
-  createBooleanProps: (propName: keyof VergeConfig): SwitchProps => {
+  useBooleanProps: (propName: keyof VergeConfig): SwitchProps => {
     const { nyanpasuConfig, setNyanpasuConfig } = useNyanpasu();
 
     if (typeof nyanpasuConfig?.[propName] !== "boolean") {

@@ -4,7 +4,7 @@ import { useNyanpasu } from "@nyanpasu/interface";
 import { BaseCard, MenuItem, SwitchItem, TextItem } from "@nyanpasu/ui";
 import { nyanpasu } from "./modules/create-props";
 
-const { createBooleanProps } = nyanpasu;
+const { useBooleanProps: createBooleanProps } = nyanpasu;
 
 export const SettingNyanpasuMisc = () => {
   const { t } = useTranslation();
@@ -20,6 +20,12 @@ export const SettingNyanpasuMisc = () => {
     silent: "Silent",
   };
 
+  const trayProxiesSelectorMode = {
+    normal: t("Normal"),
+    hidden: t("Hidden"),
+    submenu: t("Submenu"),
+  };
+
   return (
     <BaseCard label={t("Nyanpasu Setting")}>
       <List disablePadding>
@@ -32,6 +38,17 @@ export const SettingNyanpasuMisc = () => {
           }
         />
 
+        <MenuItem
+          label={t("Tray Proxies Selector")}
+          options={trayProxiesSelectorMode}
+          selected={nyanpasuConfig?.clash_tray_selector || "normal"}
+          onSelected={(value) =>
+            setNyanpasuConfig({
+              clash_tray_selector: value as "normal" | "hidden" | "submenu",
+            })
+          }
+        />
+
         <SwitchItem
           label={t("Auto Close Connections")}
           {...createBooleanProps("auto_close_connection")}
@@ -40,11 +57,6 @@ export const SettingNyanpasuMisc = () => {
         <SwitchItem
           label={t("Enable Builtin Enhanced")}
           {...createBooleanProps("enable_builtin_enhanced")}
-        />
-
-        <SwitchItem
-          label={t("Enable Tray Proxies Selector")}
-          {...createBooleanProps("clash_tray_selector")}
         />
 
         <SwitchItem

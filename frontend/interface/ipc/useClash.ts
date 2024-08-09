@@ -17,6 +17,8 @@ export const useClash = () => {
       await tauri.patchClashInfo(payload);
 
       await getClashInfo.mutate();
+    } catch (e) {
+      console.error(e);
     } finally {
       return getClashInfo.data;
     }
@@ -46,16 +48,16 @@ export const useClash = () => {
     await tauri.setProfiles({ index, profile });
 
     await getProfiles.mutate();
+
+    await getRuntimeLogs.mutate();
   };
 
   const setProfilesConfig = async (profiles: Profile.Config) => {
-    try {
-      await tauri.setProfilesConfig(profiles);
+    await tauri.setProfilesConfig(profiles);
 
-      await getProfiles.mutate();
-    } finally {
-      return getProfiles.data;
-    }
+    await getProfiles.mutate();
+
+    await getRuntimeLogs.mutate();
   };
 
   const createProfile = async (item: Partial<Profile.Item>, data?: string) => {

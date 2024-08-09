@@ -1,5 +1,10 @@
 use serde_yaml::{Mapping, Value};
 
+use crate::config::{
+    nyanpasu::{ClashCore, TunStack},
+    Config,
+};
+
 macro_rules! revise {
     ($map: expr, $key: expr, $val: expr) => {
         let ret_key = Value::String($key.into());
@@ -17,10 +22,11 @@ macro_rules! append {
     };
 }
 
+#[tracing::instrument]
 pub fn use_tun(mut config: Mapping, enable: bool) -> Mapping {
     let tun_key = Value::from("tun");
     let tun_val = config.get(&tun_key);
-
+    tracing::debug!("tun_val: {:?}", tun_val);
     if !enable && tun_val.is_none() {
         return config;
     }
@@ -31,10 +37,31 @@ pub fn use_tun(mut config: Mapping, enable: bool) -> Mapping {
 
     revise!(tun_val, "enable", enable);
     if enable {
-        append!(tun_val, "stack", "gvisor");
-        append!(tun_val, "dns-hijack", vec!["any:53"]);
-        append!(tun_val, "auto-route", true);
-        append!(tun_val, "auto-detect-interface", true);
+        let core = {
+            *Config::verge()
+                .latest()
+                .clash_core
+                .as_ref()
+                .unwrap_or(&ClashCore::default())
+        };
+        if core == ClashCore::ClashRs {
+            append!(tun_val, "device-id", "dev://utun1989");
+        } else {
+            let mut tun_stack = {
+                *Config::verge()
+                    .latest()
+                    .tun_stack
+                    .as_ref()
+                    .unwrap_or(&TunStack::default())
+            };
+            if core == ClashCore::ClashPremium && tun_stack == TunStack::Mixed {
+                tun_stack = TunStack::Gvisor;
+            }
+            append!(tun_val, "stack", AsRef::<str>::as_ref(&tun_stack));
+            append!(tun_val, "dns-hijack", vec!["any:53"]);
+            append!(tun_val, "auto-route", true);
+            append!(tun_val, "auto-detect-interface", true);
+        }
     }
 
     revise!(config, "tun", tun_val);

@@ -1,9 +1,11 @@
 /* eslint-disable @typescript-eslint/no-var-requires */
+/* eslint-disable @typescript-eslint/no-require-imports */
 const plugin = require("tailwindcss/plugin");
 
 /** @type {import('tailwindcss').Config} */
-export default {
+module.exports = {
   content: ["./src/**/*.{tsx,ts}", "../ui/**/*.{tsx,ts}"],
+  darkMode: "selector",
   theme: {
     extend: {
       maxHeight: {
@@ -11,6 +13,15 @@ export default {
       },
       zIndex: {
         top: 100000,
+      },
+      animation: {
+        marquee: "marquee 4s linear infinite",
+      },
+      keyframes: {
+        marquee: {
+          "0%": { transform: "translateX(100%)" },
+          "100%": { transform: "translateX(-100%)" },
+        },
       },
     },
   },

@@ -1,4 +1,7 @@
 import path from "node:path";
+import AutoImport from "unplugin-auto-import/vite";
+import IconsResolver from "unplugin-icons/resolver";
+import Icons from "unplugin-icons/vite";
 import { defineConfig } from "vite";
 import monaco from "vite-plugin-monaco-editor";
 import sassDts from "vite-plugin-sass-dts";
@@ -50,13 +53,25 @@ export default defineConfig(({ command }) => {
         //   plugins: ["@emotion/babel-plugin"],
         // },
       }),
+      AutoImport({
+        resolvers: [
+          IconsResolver({
+            prefix: "Icon",
+            extension: "jsx",
+          }),
+        ],
+      }),
+      Icons({
+        compiler: "jsx", // or 'solid'
+      }),
       generouted(),
       sassDts({ esmExport: true }),
       monaco({ languageWorkers: ["editorWorkerService", "typescript"] }),
       isDev && devtools(),
     ],
     optimizeDeps: {
-      include: ["@emotion/styled", "@mui/lab/*", "@mui/material/*"],
+      entries: ["./src/pages/**/*.tsx", "./src/main.tsx"],
+      include: ["@emotion/styled"],
     },
     esbuild: {
       drop: isDev ? undefined : ["console", "debugger"],

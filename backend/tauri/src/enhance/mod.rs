@@ -7,14 +7,15 @@ mod utils;
 
 pub use self::chain::ScriptType;
 use self::{chain::*, field::*, merge::*, script::*, tun::*};
-use crate::config::Config;
+use crate::config::{nyanpasu::ClashCore, Config};
+use indexmap::IndexMap;
 use serde_yaml::Mapping;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 pub use utils::{Logs, LogsExt};
 
 /// Enhance mode
 /// 返回最终配置、该配置包含的键、和script执行的结果
-pub async fn enhance() -> (Mapping, Vec<String>, HashMap<String, Logs>) {
+pub async fn enhance() -> (Mapping, Vec<String>, IndexMap<String, Logs>) {
     // config.yaml 的配置
     let clash_config = { Config::clash().latest().0.clone() };
 
@@ -22,7 +23,7 @@ pub async fn enhance() -> (Mapping, Vec<String>, HashMap<String, Logs>) {
         let verge = Config::verge();
         let verge = verge.latest();
         (
-            verge.clash_core.clone(),
+            verge.clash_core,
             verge.enable_tun_mode.unwrap_or(false),
             verge.enable_builtin_enhanced.unwrap_or(true),
             verge.enable_clash_fields.unwrap_or(true),
@@ -61,7 +62,7 @@ pub async fn enhance() -> (Mapping, Vec<String>, HashMap<String, Logs>) {
         (current_mapping, profile_spec_chains, valid)
     };
 
-    let mut result_map = HashMap::new(); // 保存脚本日志
+    let mut result_map = IndexMap::new(); // 保存脚本日志
     let mut exists_keys = use_keys(&config); // 保存出现过的keys
 
     let valid = use_valid_fields(valid);
@@ -71,7 +72,6 @@ pub async fn enhance() -> (Mapping, Vec<String>, HashMap<String, Logs>) {
     let mut script_runner = RunnerManager::new();
     for item in chains.into_iter() {
         // TODO: 想一个更好的办法，避免内存拷贝
-        config = use_lowercase(config.clone()); // 将所有的 key 转为小写（递归）
         match item.data {
             ChainTypeWrapper::Merge(merge) => {
                 let mut logs = vec![];
@@ -101,7 +101,6 @@ pub async fn enhance() -> (Mapping, Vec<String>, HashMap<String, Logs>) {
             }
         }
     }
-    config = use_lowercase(config); // 将所有的 key 转为小写（递归）
 
     // 合并默认的config
     clash_config
@@ -118,13 +117,13 @@ pub async fn enhance() -> (Mapping, Vec<String>, HashMap<String, Logs>) {
     if enable_builtin {
         for item in ChainItem::builtin()
             .into_iter()
-            .filter(|(s, _)| s.is_support(clash_core.as_ref()))
+            .filter(|(s, _)| s.contains(*clash_core.as_ref().unwrap_or(&ClashCore::default())))
             .map(|(_, c)| c)
         {
             log::debug!(target: "app", "run builtin script {}", item.uid);
 
             if let ChainTypeWrapper::Script(script) = item.data {
-                let (res, logs) = script_runner
+                let (res, _) = script_runner
                     .process_script(script, config.to_owned())
                     .await;
                 match res {

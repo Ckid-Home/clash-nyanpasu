@@ -19,6 +19,7 @@ mod core;
 mod enhance;
 mod feat;
 mod ipc;
+mod server;
 mod utils;
 use crate::{
     config::Config,
@@ -26,6 +27,7 @@ use crate::{
     utils::{init, resolve},
 };
 use tauri::{api, Manager, SystemTray};
+use utils::resolve::{is_window_opened, reset_window_open_counter};
 
 rust_i18n::i18n!("../../locales");
 
@@ -57,10 +59,21 @@ fn main() -> std::io::Result<()> {
     #[cfg(feature = "deadlock-detection")]
     deadlock_detection();
 
-    // Parse commands
-    cmds::parse().unwrap();
-
     // Should be in first place in order prevent single instance check block everything
+    // Custom scheme check
+    #[cfg(not(target_os = "macos"))]
+    // on macos the plugin handles this (macos doesn't use cli args for the url)
+    let custom_schema = match std::env::args().nth(1) {
+        Some(url) => url::Url::parse(&url).ok(),
+        None => None,
+    };
+    #[cfg(target_os = "macos")]
+    let custom_schema: Option<url::Url> = None;
+
+    if custom_schema.is_none() {
+        // Parse commands
+        cmds::parse().unwrap();
+    };
     #[cfg(feature = "verge-dev")]
     tauri_plugin_deep_link::prepare("moe.elaina.clash.nyanpasu.dev");
 
@@ -69,7 +82,9 @@ fn main() -> std::io::Result<()> {
 
     // 单例检测
     let single_instance_result = utils::init::check_singleton();
-
+    if single_instance_result.is_err() {
+        std::process::exit(0);
+    }
     // Use system locale as default
     let locale = {
         let locale = utils::help::get_system_locale();
@@ -77,14 +92,16 @@ fn main() -> std::io::Result<()> {
     };
     rust_i18n::set_locale(locale);
 
-    if let Err(e) = init::run_pending_migrations() {
-        utils::dialog::panic_dialog(
-            &format!(
-                "Failed to finish migration event: {}\nYou can see the detailed information at migration.log in your local data dir.\nYou're supposed to submit it as the attachment of new issue.", 
-                e,
-            )
-        );
-        std::process::exit(1);
+    if single_instance_result.is_ok() {
+        if let Err(e) = init::run_pending_migrations() {
+            utils::dialog::panic_dialog(
+                &format!(
+                    "Failed to finish migration event: {}\nYou can see the detailed information at migration.log in your local data dir.\nYou're supposed to submit it as the attachment of new issue.", 
+                    e,
+                )
+            );
+            std::process::exit(1);
+        }
     }
 
     crate::log_err!(init::init_config());
@@ -112,30 +129,41 @@ fn main() -> std::io::Result<()> {
             let handle = app.handle().clone();
             // For start new app from schema
             #[cfg(not(target_os = "macos"))]
-            if let Some(url) = std::env::args().nth(1) {
+            if let Some(url) = custom_schema {
                 log::info!(target: "app", "started with schema");
-                if Config::verge().data().enable_silent_start.unwrap_or(true) {
-                    resolve::create_window(&handle.clone());
+                resolve::create_window(&handle.clone());
+                while !is_window_opened() {
+                    log::info!(target: "app", "waiting for window open");
+                    std::thread::sleep(std::time::Duration::from_millis(100));
                 }
-                app.listen_global("init-complete", move |_| {
-                    log::info!(target: "app", "frontend init-complete event received");
-                    Handle::global()
-                        .app_handle
-                        .lock()
-                        .as_ref()
-                        .unwrap()
-                        .emit_all("scheme-request-received", url.clone())
-                        .unwrap();
-                });
+                Handle::global()
+                    .app_handle
+                    .lock()
+                    .as_ref()
+                    .unwrap()
+                    .emit_all("scheme-request-received", url.clone())
+                    .unwrap();
             }
+            // This operation should terminate the app if app is called by custom scheme and this instance is not the primary instance
             log_err!(tauri_plugin_deep_link::register(
-                "clash-nyanpasu",
+                &["clash-nyanpasu", "clash"],
                 move |request| {
                     log::info!(target: "app", "scheme request received: {:?}", &request);
                     resolve::create_window(&handle.clone()); // create window if not exists
+                    while !is_window_opened() {
+                        log::info!(target: "app", "waiting for window open");
+                        std::thread::sleep(std::time::Duration::from_millis(100));
+                    }
                     handle.emit_all("scheme-request-received", request).unwrap();
                 }
             ));
+            std::thread::spawn(move || {
+                nyanpasu_utils::runtime::block_on(async move {
+                    server::run(*server::SERVER_PORT)
+                        .await
+                        .expect("failed to start server");
+                });
+            });
             Ok(())
         })
         .on_system_tray_event(core::tray::Tray::on_system_tray_event)
@@ -201,6 +229,11 @@ fn main() -> std::io::Result<()> {
             ipc::update_proxy_provider,
             ipc::restart_application,
             ipc::collect_envs,
+            ipc::get_server_port,
+            ipc::set_tray_icon,
+            ipc::is_tray_icon_set,
+            ipc::get_core_status,
+            ipc::url_delay_test,
         ]);
 
     #[cfg(target_os = "macos")]
@@ -243,6 +276,7 @@ fn main() -> std::io::Result<()> {
             if label == "main" {
                 if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                     api.prevent_close();
+                    reset_window_open_counter();
                     let _ = resolve::save_window_state(app_handle, true);
 
                     if let Some(win) = app_handle.get_window("main") {
@@ -260,6 +294,7 @@ fn main() -> std::io::Result<()> {
                     }
                     tauri::WindowEvent::CloseRequested { .. } | tauri::WindowEvent::Destroyed => {
                         // log::info!(target: "app", "window close requested");
+                        reset_window_open_counter();
                         let _ = resolve::save_window_state(app_handle, true);
                     }
                     tauri::WindowEvent::Moved(_) | tauri::WindowEvent::Resized(_) => {

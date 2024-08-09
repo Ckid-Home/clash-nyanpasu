@@ -1,28 +1,52 @@
+import { useMemo } from "react";
 import { useTranslation } from "react-i18next";
-import { useMessage } from "@/hooks/use-notification";
+import { useCoreType } from "@/hooks/use-store";
 import getSystem from "@/utils/get-system";
+import { useGlobalMutation } from "@/utils/mutation";
+import { message } from "@/utils/notification";
 import { Button, List, ListItem, ListItemText } from "@mui/material";
-import { pullupUWPTool } from "@nyanpasu/interface";
+import { pullupUWPTool, useNyanpasu, VergeConfig } from "@nyanpasu/interface";
 import { BaseCard, MenuItem, SwitchItem } from "@nyanpasu/ui";
 import { clash } from "./modules";
 
-const { createBooleanProps, createMenuProps } = clash;
+const { useBooleanProps: createBooleanProps, useMenuProps: createMenuProps } =
+  clash;
 
 const isWIN = getSystem() === "windows";
 
 export const SettingClashBase = () => {
   const { t } = useTranslation();
-
+  const [coreType] = useCoreType();
+  const { nyanpasuConfig, setNyanpasuConfig } = useNyanpasu();
   const clickUWP = async () => {
     try {
       await pullupUWPTool();
     } catch (e) {
-      useMessage(`Failed to Open UWP Tools.\n${JSON.stringify(e)}`, {
+      message(`Failed to Open UWP Tools.\n${JSON.stringify(e)}`, {
         title: t("Error"),
         type: "error",
       });
     }
   };
+
+  const tunStackOptions = useMemo(() => {
+    const options: {
+      [key: string]: string;
+    } = {
+      system: "System",
+      gvisor: "gVisor",
+      mixed: "Mixed",
+    };
+    if (coreType === "clash") {
+      delete options.mixed;
+    }
+    return options;
+  }, [coreType]);
+  const tunStackSelected = useMemo(() => {
+    const stack = nyanpasuConfig?.tun_stack || "gvisor";
+    return stack in tunStackOptions ? stack : "gvisor";
+  }, [nyanpasuConfig?.tun_stack, tunStackOptions]);
+  const mutate = useGlobalMutation();
 
   return (
     <BaseCard label={t("Clash Setting")}>
@@ -34,6 +58,27 @@ export const SettingClashBase = () => {
 
         <SwitchItem label={t("IPv6")} {...createBooleanProps("ipv6")} />
 
+        {coreType !== "clash-rs" && (
+          <MenuItem
+            label={t("Tun Stack")}
+            options={tunStackOptions}
+            selected={tunStackSelected}
+            onSelected={(value) => {
+              const payload = {
+                tun_stack: value as NonNullable<VergeConfig["tun_stack"]>,
+              } as Partial<VergeConfig>;
+              if (nyanpasuConfig?.enable_tun_mode) {
+                payload.enable_tun_mode = true; // just to reload clash config
+              }
+              setNyanpasuConfig(payload);
+              mutate(
+                (key) =>
+                  typeof key === "string" &&
+                  key.includes("/getRuntimeConfigYaml"),
+              );
+            }}
+          />
+        )}
         <MenuItem
           label={t("Log Level")}
           {...createMenuProps("log-level", {

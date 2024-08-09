@@ -1,6 +1,6 @@
-use super::{runner::ProcessOutput, use_filter, use_lowercase, Logs, LogsExt};
+use super::{runner::ProcessOutput, use_lowercase, Logs, LogsExt};
 use mlua::LuaSerdeExt;
-use serde_yaml::{Mapping, Sequence, Value};
+use serde_yaml::{Mapping, Value};
 use tracing_attributes::instrument;
 
 // Override recursive, and if the value is sequence, it should be append to the end.
@@ -64,97 +64,107 @@ pub fn use_merge(merge: Mapping, mut config: Mapping) -> ProcessOutput {
     tracing::trace!("merge: {:#?}", merge);
     let mut logs = Logs::new();
     let mut map = Value::from(config);
-    for (key, value) in use_lowercase(merge.clone()) {
-        let key_str = key.as_str().unwrap_or_default();
-        if key_str.starts_with("prepend__") || key_str.starts_with("prepend-") {
-            if !value.is_sequence() {
-                logs.warn(format!("prepend value is not sequence: {:#?}", key_str));
-                continue;
-            }
-            let key_str = key_str.replace("prepend__", "").replace("prepend-", "");
-            let field = find_field(&mut map, &key_str);
-            match field {
-                Some(field) => {
-                    if field.is_sequence() {
-                        merge_sequence(field, &value, false);
-                    } else {
-                        logs.warn(format!("field is not sequence: {:#?}", key_str));
-                    }
+    for (key, value) in merge.iter() {
+        let key_str = key.as_str().unwrap_or_default().to_lowercase();
+        match key_str {
+            key_str if key_str.starts_with("prepend__") || key_str.starts_with("prepend-") => {
+                if !value.is_sequence() {
+                    logs.warn(format!("prepend value is not sequence: {:#?}", key_str));
+                    continue;
                 }
-                None => {
-                    logs.warn(format!("field not found: {:#?}", key_str));
-                }
-            }
-            continue;
-        }
-        if key_str.starts_with("append__") || key_str.starts_with("append-") {
-            if !value.is_sequence() {
-                logs.warn(format!("append value is not sequence: {:#?}", key_str));
-                continue;
-            }
-            let key_str = key_str.replace("append__", "").replace("append-", "");
-            let field = find_field(&mut map, &key_str);
-            match field {
-                Some(field) => {
-                    if field.is_sequence() {
-                        merge_sequence(field, &value, true);
-                    } else {
-                        logs.warn(format!("field is not sequence: {:#?}", key_str));
-                    }
-                }
-                None => {
-                    logs.warn(format!("field not found: {:#?}", key_str));
-                }
-            }
-            continue;
-        }
-        if key_str.starts_with("override__") {
-            let key_str = key_str.replace("override__", "");
-            let field = find_field(&mut map, &key_str);
-            match field {
-                Some(field) => {
-                    *field = value;
-                }
-                None => {
-                    logs.warn(format!("field not found: {:#?}", key_str));
-                }
-            }
-            continue;
-        }
-        if key_str.starts_with("filter__") {
-            let key_str = key_str.replace("filter__", "");
-            if !value.is_string() {
-                logs.warn(format!("filter value is not string: {:#?}", key_str));
-                continue;
-            }
-            let field = find_field(&mut map, &key_str);
-            match field {
-                Some(field) => {
-                    if !field.is_sequence() {
-                        logs.warn(format!("field is not sequence: {:#?}", key_str));
-                        continue;
-                    }
-                    let filter = value.as_str().unwrap_or_default();
-                    let lua = super::script::create_lua_context();
-                    let list = field.as_sequence_mut().unwrap();
-                    // apply filter to each item
-                    list.retain(|item| {
-                        let item = lua.to_value(item).unwrap();
-                        if let Err(e) = lua.globals().set("item", item) {
-                            logs.error(e.to_string());
-                            return false;
+                let key_str = key_str.replace("prepend__", "").replace("prepend-", "");
+                let field = find_field(&mut map, &key_str);
+                match field {
+                    Some(field) => {
+                        if field.is_sequence() {
+                            merge_sequence(field, &value, false);
+                        } else {
+                            logs.warn(format!("field is not sequence: {:#?}", key_str));
                         }
-                        lua.load(filter).eval::<bool>().unwrap_or(false)
-                    });
+                    }
+                    None => {
+                        logs.warn(format!("field not found: {:#?}", key_str));
+                    }
                 }
-                None => {
-                    logs.warn(format!("field not found: {:#?}", key_str));
-                }
+                continue;
             }
-            continue;
-        }
+            key_str if key_str.starts_with("append__") || key_str.starts_with("append-") => {
+                if !value.is_sequence() {
+                    logs.warn(format!("append value is not sequence: {:#?}", key_str));
+                    continue;
+                }
+                let key_str = key_str.replace("append__", "").replace("append-", "");
+                let field = find_field(&mut map, &key_str);
+                match field {
+                    Some(field) => {
+                        if field.is_sequence() {
+                            merge_sequence(field, &value, true);
+                        } else {
+                            logs.warn(format!("field is not sequence: {:#?}", key_str));
+                        }
+                    }
+                    None => {
+                        logs.warn(format!("field not found: {:#?}", key_str));
+                    }
+                }
+                continue;
+            }
+            key_str if key_str.starts_with("override__") => {
+                let key_str = key_str.replace("override__", "");
+                let field = find_field(&mut map, &key_str);
+                match field {
+                    Some(field) => {
+                        *field = value.clone();
+                    }
+                    None => {
+                        logs.warn(format!("field not found: {:#?}", key_str));
+                    }
+                }
+                continue;
+            }
+            key_str if key_str.starts_with("filter__") => {
+                let key_str = key_str.replace("filter__", "");
+                if !value.is_string() {
+                    logs.warn(format!("filter value is not string: {:#?}", key_str));
+                    continue;
+                }
+                let field = find_field(&mut map, &key_str);
+                match field {
+                    Some(field) => {
+                        if !field.is_sequence() {
+                            logs.warn(format!("field is not sequence: {:#?}", key_str));
+                            continue;
+                        }
+                        let filter = value.as_str().unwrap_or_default();
+                        let lua = match super::script::create_lua_context() {
+                            Ok(lua) => lua,
+                            Err(e) => {
+                                logs.error(e.to_string());
+                                continue;
+                            }
+                        };
 
-        override_recursive(map.as_mapping_mut().unwrap(), &key, value);
+                        let list = field.as_sequence_mut().unwrap();
+                        // apply filter to each item
+                        list.retain(|item| {
+                            let item = lua.to_value(item).unwrap();
+                            if let Err(e) = lua.globals().set("item", item) {
+                                logs.error(e.to_string());
+                                return false;
+                            }
+                            lua.load(filter).eval::<bool>().unwrap_or(false)
+                        });
+                    }
+                    None => {
+                        logs.warn(format!("field not found: {:#?}", key_str));
+                    }
+                }
+                continue;
+            }
+            _ => {
+                override_recursive(map.as_mapping_mut().unwrap(), &key, value.clone());
+            }
+        }
     }
     config = map.as_mapping().unwrap().clone();
     tracing::trace!("merged config: {:#?}", config);

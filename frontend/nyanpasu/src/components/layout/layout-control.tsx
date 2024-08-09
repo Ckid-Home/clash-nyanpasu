@@ -1,15 +1,18 @@
+import { useMemoizedFn } from "ahooks";
 import { debounce } from "lodash-es";
 import { useEffect, useState } from "react";
-import { NotificationType, useNotification } from "@/hooks/use-notification";
 import { classNames } from "@/utils";
+import { notification, NotificationType } from "@/utils/notification";
 import {
   CloseRounded,
   CropSquareRounded,
   FilterNoneRounded,
   HorizontalRuleRounded,
+  PushPin,
+  PushPinOutlined,
 } from "@mui/icons-material";
 import { alpha, Button, ButtonProps, useTheme } from "@mui/material";
-import { save_window_size_state } from "@nyanpasu/interface";
+import { save_window_size_state, useNyanpasu } from "@nyanpasu/interface";
 import { platform, type Platform } from "@tauri-apps/api/os";
 import { appWindow } from "@tauri-apps/api/window";
 
@@ -29,6 +32,7 @@ const CtrlButton = (props: ButtonProps) => {
 };
 
 export const LayoutControl = ({ className }: { className?: string }) => {
+  const { nyanpasuConfig, setNyanpasuConfig } = useNyanpasu();
   const [isMaximized, setIsMaximized] = useState(false);
 
   const [platfrom, setPlatform] = useState<Platform>("win32");
@@ -38,13 +42,19 @@ export const LayoutControl = ({ className }: { className?: string }) => {
       const isMaximized = await appWindow.isMaximized();
       setIsMaximized(() => isMaximized);
     } catch (error) {
-      useNotification({
+      notification({
         type: NotificationType.Error,
         title: "Error",
         body: typeof error === "string" ? error : (error as Error).message,
       });
     }
   };
+
+  const toggleAlwaysOnTop = useMemoizedFn(async () => {
+    const isAlwaysOnTop = !!nyanpasuConfig?.always_on_top;
+    await setNyanpasuConfig({ always_on_top: !isAlwaysOnTop });
+    await appWindow.setAlwaysOnTop(!isAlwaysOnTop);
+  });
 
   useEffect(() => {
     // Update the maximized state
@@ -67,6 +77,17 @@ export const LayoutControl = ({ className }: { className?: string }) => {
 
   return (
     <div className={classNames("flex gap-1", className)} data-tauri-drag-region>
+      <CtrlButton onClick={toggleAlwaysOnTop}>
+        {nyanpasuConfig?.always_on_top ? (
+          <PushPin fontSize="small" style={{ transform: "rotate(15deg)" }} />
+        ) : (
+          <PushPinOutlined
+            fontSize="small"
+            style={{ transform: "rotate(15deg)" }}
+          />
+        )}
+      </CtrlButton>
+
       <CtrlButton onClick={() => appWindow.minimize()}>
         <HorizontalRuleRounded fontSize="small" />
       </CtrlButton>
