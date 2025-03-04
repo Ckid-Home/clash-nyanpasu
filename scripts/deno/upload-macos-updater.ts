@@ -2,7 +2,7 @@ import * as path from 'jsr:@std/path'
 import { globby } from 'npm:globby'
 import { consola } from './utils/logger.ts'
 
-const WORKSPACE_ROOT = path.join(Deno.cwd(), '../..')
+const WORKSPACE_ROOT = path.join(import.meta.dirname!, '../..')
 consola.info(`WORKSPACE_ROOT: ${WORKSPACE_ROOT}`)
 
 const GITHUB_TOKEN = Deno.env.get('GITHUB_TOKEN') || Deno.env.get('GH_TOKEN')
