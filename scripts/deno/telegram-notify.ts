@@ -2,8 +2,7 @@ import { retry } from 'jsr:@std/async@1/retry'
 import { format as formatBytes } from 'jsr:@std/fmt@1/bytes'
 import { ensureDir, exists } from 'jsr:@std/fs'
 import * as path from 'jsr:@std/path'
-import { TelegramClient } from 'npm:telegram'
-import { StringSession } from 'npm:telegram/sessions'
+import { Bot } from 'npm:grammy'
 import { consola } from './utils/logger.ts'
 
 // --- env helpers ---
@@ -23,8 +22,6 @@ const TELEGRAM_TOKEN = requireEnv('TELEGRAM_TOKEN')
 const TELEGRAM_TO = requireEnv('TELEGRAM_TO')
 const TELEGRAM_TO_NIGHTLY = requireEnv('TELEGRAM_TO_NIGHTLY')
 const GITHUB_TOKEN = requireEnv('GITHUB_TOKEN')
-const TELEGRAM_API_ID = Number(requireEnv('TELEGRAM_API_ID'))
-const TELEGRAM_API_HASH = requireEnv('TELEGRAM_API_HASH')
 const FILE_SERVER_TOKEN = requireEnv('FILE_SERVER_TOKEN')
 const WORKFLOW_RUN_ID = Deno.env.get('WORKFLOW_RUN_ID')
 
@@ -204,14 +201,7 @@ const platformGroups: PlatformGroup[] = [
 // --- main ---
 
 async function main() {
-  const client = new TelegramClient(
-    new StringSession(''),
-    TELEGRAM_API_ID,
-    TELEGRAM_API_HASH,
-    { connectionRetries: 5 },
-  )
-
-  await client.start({ botAuthToken: TELEGRAM_TOKEN })
+  const bot = new Bot(TELEGRAM_TOKEN)
 
   const release = await fetchRelease()
   const GIT_SHORT_HASH = getGitShortHash()
@@ -297,11 +287,8 @@ async function main() {
   const messageText = lines.join('\n')
   const chatId = nightlyBuild ? TELEGRAM_TO_NIGHTLY : TELEGRAM_TO
 
-  await client.sendMessage(chatId, { message: messageText })
+  await bot.api.sendMessage(chatId, messageText, { parse_mode: 'Markdown' })
   consola.success('Sent telegram notification')
-
-  await client.disconnect()
-  Deno.exit()
 }
 
 main().catch((error) => {
